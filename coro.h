@@ -32,6 +32,7 @@ struct Coro {
 int coro_create(void (*func)(void *), void *arg);
 void coro_start(void);
 void coro_yield(void);
-void coro_sleep_io(int fd, int events);
+void coro_sleep_fd(int fd, int events);
+void coro_sleep_ms(int ms);
 
 #endif

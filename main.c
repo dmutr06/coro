@@ -24,6 +24,8 @@ void worker(void *arg) {
 
     int sum = count(ctx->name, ctx->count);
 
+    coro_sleep_ms(1000);
+
     printf("sum %s = %d\n", ctx->name, sum);
 }
 
@@ -34,7 +36,7 @@ void reader(void *arg) {
     printf("Reader waiting for input...\n");
     fflush(stdout);
 
-    coro_sleep_io(STDIN_FILENO, EPOLLIN);
+    coro_sleep_fd(STDIN_FILENO, EPOLLIN);
 
     int n = read(STDIN_FILENO, buf, sizeof(buf) - 1);
     if (n > 0) {

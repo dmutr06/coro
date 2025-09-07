@@ -5,6 +5,8 @@
 #include <ucontext.h>
 #include <sys/epoll.h>
 #include <errno.h>
+#include <sys/timerfd.h>
+#include <unistd.h>
 
 #define MAX_COROS 1024
 
@@ -23,6 +25,10 @@ static int find_free_slot(void) {
     }
 
     return -1;
+}
+
+void coro_destroy(Coro *coro) {
+    free(coro->stack);
 }
 
 void coro_trampoline(uintptr_t ptr) {
@@ -68,7 +74,12 @@ void coro_yield(void) {
     swapcontext(&coro->ctx, &main_ctx);
 }
 
-void coro_sleep_io(int fd, int events) {
+void coro_sleep_fd(int fd, int events) {
+    if (fd < 0) {
+        coro_yield();
+        return;
+    }
+
     Coro *coro = &coros[cur];
     coro->state = CORO_SLEEPING;
     coro->waiting_fd = fd;
@@ -89,6 +100,28 @@ void coro_sleep_io(int fd, int events) {
     }
 
     swapcontext(&coro->ctx, &main_ctx);
+}
+
+void coro_sleep_ms(int ms) {
+    if (ms <= 0) {
+        coro_yield();
+        return;
+    }
+
+    int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+
+    struct itimerspec its = {0};
+    its.it_value.tv_sec = ms / 1000;
+    its.it_value.tv_nsec = (ms % 1000) * 1000000;
+
+    if (timerfd_settime(tfd, 0, &its, NULL) < 0) {
+        close(tfd);
+        coro_yield();
+        return;
+    }
+
+    coro_sleep_fd(tfd, EPOLLIN);
+    close(tfd);
 }
 
 void coro_start(void) {
@@ -129,10 +162,11 @@ void coro_start(void) {
             epoll_ctl(epoll_fd, EPOLL_CTL_DEL, coro->waiting_fd, NULL);
             coro->waiting_fd = -1;
         }
-
     }
-}
 
-void coro_destroy(Coro *coro) {
-    free(coro->stack);
+    close(epoll_fd);
+
+    for (int i = 0; i < count; ++i) {
+        coro_destroy(&coros[i]);
+    }
 }
