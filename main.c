@@ -1,63 +1,52 @@
 #include "coro.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <sys/epoll.h>
-#include <ucontext.h>
 #include <unistd.h>
 
-typedef struct {
-    char *name;
-    int count;
-} WorkerCtx;
+void *receiver(void *arg) {
+    CoroChannel *chan = arg;
 
-int count(char *from, int n) {
-    int sum = 0;
-    for (int i = 0; i < n; ++i) {
-        sum += i;
-        coro_yield();
+    while (1) {
+        char *msg = coro_channel_recv(chan);
+        if (msg == NULL) return NULL;
+        printf("Got: %s\n", msg);
     }
 
-    return sum;
+    return NULL;
 }
 
-void worker(void *arg) {
-    WorkerCtx *ctx = arg;
+void *sender(void *arg) {
+    CoroChannel *chan = arg;
 
-    int sum = count(ctx->name, ctx->count);
+    for (int i = 0; i < 10; ++i) {
+        coro_channel_send(chan, "MSG");
+        coro_sleep_ms(1000);
+    }
 
-    coro_sleep_ms(1000);
+    coro_channel_send(chan, NULL);
 
-    printf("sum %s = %d\n", ctx->name, sum);
+    return NULL;
 }
 
-void reader(void *arg) {
+void *main_coro(void *arg) {
     (void) arg;
-    char buf[128];
 
-    printf("Reader waiting for input...\n");
-    fflush(stdout);
+    CoroChannel chan;
+    coro_channel_init(&chan, 64);
 
-    coro_sleep_fd(STDIN_FILENO, EPOLLIN);
+    CoroGroup grp;
+    coro_group_init(&grp);
+    coro_group_add(&grp, coro_spawn(sender, &chan));
+    coro_group_add(&grp, coro_spawn(receiver, &chan));
 
-    int n = read(STDIN_FILENO, buf, sizeof(buf) - 1);
-    if (n > 0) {
-        buf[n] = '\0';
-        printf("Reader got: %s\n", buf);
-    }
-}
+    coro_group_await(&grp);
+    coro_channel_deinit(&chan);
+    coro_group_deinit(&grp);
 
-int main() {
-    WorkerCtx a = { "A", 10 };
-    WorkerCtx b = { "B", 5 };
-    WorkerCtx c = { "C", 7 };
-
-    coro_create(reader, NULL);
-    coro_create(worker, &a);
-    coro_create(worker, &b);
-    coro_create(worker, &c);
-
-    coro_start();
-
-    printf("This shit works\n");
     return 0;
 }
 
+int main() {
+    return (int)(intptr_t) coro_await(coro_spawn(main_coro, NULL));
+}
