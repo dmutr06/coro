@@ -131,8 +131,8 @@ void coro_sleep_ms(int ms) {
     }
 
     coro_sleep_fd(tfd, EPOLLIN);
-    int a;
-    read(tfd, &a, 4);
+    uint64_t timer_val;
+    read(tfd, &timer_val, sizeof(uint64_t));
     close(tfd);
 }
 
@@ -294,7 +294,7 @@ void *coro_await(Coro *target) {
                     // Consume the timer event
                     uint64_t timer_val;
                     ssize_t s = read(coro->timeout_fd, &timer_val, sizeof(uint64_t));
-                    if (s < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                    if (s != sizeof(uint64_t) && errno != EAGAIN && errno != EWOULDBLOCK) {
                         perror("read timeout_fd");
                     }
                 } else {

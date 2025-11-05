@@ -45,7 +45,12 @@ void *test_fd_ready(void *arg) {
     }
     
     // Write some data to make the read end immediately readable
-    write(pipefd[1], "test", 4);
+    if (write(pipefd[1], "test", 4) < 0) {
+        perror("write");
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return NULL;
+    }
     
     printf("Testing fd ready before timeout...\n");
     int result = coro_sleep_fd_timeout(pipefd[0], EPOLLIN, 5000); // 5 second timeout
@@ -73,7 +78,9 @@ typedef struct {
 void *delayed_writer(void *arg) {
     WriterArg *writer_arg = (WriterArg *)arg;
     coro_sleep_ms(500); // Sleep 500ms
-    write(writer_arg->write_fd, "data", 4);
+    if (write(writer_arg->write_fd, "data", 4) < 0) {
+        perror("write");
+    }
     return NULL;
 }
 
@@ -123,7 +130,12 @@ void *test_zero_timeout(void *arg) {
     }
     
     fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
-    write(pipefd[1], "test", 4);
+    if (write(pipefd[1], "test", 4) < 0) {
+        perror("write");
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return NULL;
+    }
     
     printf("Testing zero timeout with ready fd...\n");
     int result = coro_sleep_fd_timeout(pipefd[0], EPOLLIN, 0);
