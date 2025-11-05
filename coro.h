@@ -31,6 +31,8 @@ struct Coro {
     int detached;
     int waiting_fd;
     int waiting_events;
+    int timeout_fd;
+    int timed_out;
 };
 
 
@@ -40,6 +42,7 @@ void coro_detach(Coro *target);
 void coro_yield(void);
 void coro_sleep_fd(int fd, int events);
 void coro_sleep_ms(int ms);
+int coro_sleep_fd_timeout(int fd, int events, int timeout_ms);
 
 typedef struct {
     void **buf;

@@ -42,6 +42,8 @@ static void coro_trampoline(uintptr_t ptr) {
 static void coro_reset(Coro *coro, void *(*func)(void *), void *arg) {
     coro->waiting_events = 0;
     coro->waiting_fd = -1;
+    coro->timeout_fd = -1;
+    coro->timed_out = 0;
     coro->state = CORO_READY;
     coro->entry.func = func;
     coro->entry.arg = arg;
@@ -133,6 +135,85 @@ void coro_sleep_ms(int ms) {
     close(tfd);
 }
 
+int coro_sleep_fd_timeout(int fd, int events, int timeout_ms) {
+    if (fd < 0 || timeout_ms <= 0) {
+        if (fd >= 0) {
+            coro_sleep_fd(fd, events);
+            return 1;
+        }
+        coro_yield();
+        return 0;
+    }
+
+    if (!cur_coro) return 0;
+
+    // Create a timerfd for the timeout
+    int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    if (tfd < 0) {
+        // Fallback to no timeout
+        coro_sleep_fd(fd, events);
+        return 1;
+    }
+
+    struct itimerspec its = {0};
+    its.it_value.tv_sec = timeout_ms / 1000;
+    its.it_value.tv_nsec = (timeout_ms % 1000) * 1000000;
+
+    if (timerfd_settime(tfd, 0, &its, NULL) < 0) {
+        close(tfd);
+        // Fallback to no timeout
+        coro_sleep_fd(fd, events);
+        return 1;
+    }
+
+    Coro *coro = cur_coro;
+    coro->state = CORO_SLEEPING;
+    coro->waiting_fd = fd;
+    coro->waiting_events = events;
+    coro->timeout_fd = tfd;
+    coro->timed_out = 0;
+
+    sleeping_coros_count += 1;
+
+    // Add main fd to epoll
+    struct epoll_event ev = {
+        .events = events,
+        .data.ptr = coro
+    };
+
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
+        if (errno == EEXIST) {
+            epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+        } else {
+            close(tfd);
+            coro->timeout_fd = -1;
+            sleeping_coros_count -= 1;
+            coro_yield();
+            return 0;
+        }
+    }
+
+    // Add timeout fd to epoll
+    struct epoll_event timeout_ev = {
+        .events = EPOLLIN,
+        .data.ptr = coro
+    };
+
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, tfd, &timeout_ev) < 0) {
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+        close(tfd);
+        coro->timeout_fd = -1;
+        sleeping_coros_count -= 1;
+        coro_yield();
+        return 0;
+    }
+
+    swapcontext(&coro->ctx, &main_ctx);
+    
+    // Return 1 if fd was ready, 0 if timeout occurred
+    return !coro->timed_out;
+}
+
 void *coro_await(Coro *target) {
     Coro *caller = cur_coro;
 
@@ -180,7 +261,32 @@ void *coro_await(Coro *target) {
 
         for (int i = 0; i < n; ++i) {
             Coro *coro = (Coro *) events[i].data.ptr;
-            if (events[i].events & coro->waiting_events) {
+            if (coro->state != CORO_SLEEPING) continue;
+            
+            // Check if this is a timeout event or a regular event
+            // For coroutines with timeout, we need to determine which fd triggered
+            if (coro->timeout_fd >= 0) {
+                // Check if the timeout fd is readable (timeout occurred)
+                uint64_t timer_val;
+                ssize_t s = read(coro->timeout_fd, &timer_val, sizeof(uint64_t));
+                if (s == sizeof(uint64_t)) {
+                    // Timeout occurred
+                    coro->timed_out = 1;
+                } else {
+                    // Main fd is ready
+                    coro->timed_out = 0;
+                }
+                
+                coro->state = CORO_READY;
+                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, coro->waiting_fd, NULL);
+                coro->waiting_fd = -1;
+                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, coro->timeout_fd, NULL);
+                close(coro->timeout_fd);
+                coro->timeout_fd = -1;
+                coro->waiting_events = 0;
+                sleeping_coros_count -= 1;
+                darr_push(&ready_coros, coro);
+            } else if (events[i].events & coro->waiting_events) {
                 coro->state = CORO_READY;
                 epoll_ctl(epoll_fd, EPOLL_CTL_DEL, coro->waiting_fd, NULL);
                 coro->waiting_fd = -1;
