@@ -132,7 +132,10 @@ void coro_sleep_ms(int ms) {
 
     coro_sleep_fd(tfd, EPOLLIN);
     uint64_t timer_val;
-    read(tfd, &timer_val, sizeof(uint64_t));
+    ssize_t s = read(tfd, &timer_val, sizeof(uint64_t));
+    if (s != sizeof(uint64_t) && errno != EAGAIN && errno != EWOULDBLOCK) {
+        perror("read timerfd");
+    }
     close(tfd);
 }
 
@@ -194,7 +197,14 @@ int coro_sleep_fd_timeout(int fd, int events, int timeout_ms) {
 
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
         if (errno == EEXIST) {
-            epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+            if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ev) < 0) {
+                perror("epoll_ctl MOD");
+                close(tfd);
+                coro->timeout_fd = -1;
+                sleeping_coros_count -= 1;
+                coro_yield();
+                return 0;
+            }
         } else {
             close(tfd);
             coro->timeout_fd = -1;
@@ -298,7 +308,8 @@ void *coro_await(Coro *target) {
                         perror("read timeout_fd");
                     }
                 } else {
-                    // Neither ready (shouldn't happen, but default to main fd ready)
+                    // Neither ready (unexpected condition) - log and default to main fd ready
+                    fprintf(stderr, "Warning: epoll woke coroutine but neither fd is ready (poll_ret=%d)\n", poll_ret);
                     coro->timed_out = 0;
                 }
                 
