@@ -52,8 +52,11 @@ void *test_fd_ready(void *arg) {
     
     if (result == 1) {
         printf("✓ FD became ready before timeout\n");
-        char buf[5];
-        read(pipefd[0], buf, 4);
+        char buf[5] = {0};
+        ssize_t n = read(pipefd[0], buf, 4);
+        if (n < 0) {
+            perror("read");
+        }
     } else {
         printf("✗ Unexpected timeout\n");
     }
@@ -94,8 +97,11 @@ void *test_delayed_fd_ready(void *arg) {
     
     if (result == 1) {
         printf("✓ FD became ready within timeout\n");
-        char buf[5];
-        read(pipefd[0], buf, 4);
+        char buf[5] = {0};
+        ssize_t n = read(pipefd[0], buf, 4);
+        if (n < 0) {
+            perror("read");
+        }
     } else {
         printf("✗ Timeout occurred when fd should have been ready\n");
     }

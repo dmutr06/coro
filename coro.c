@@ -277,18 +277,28 @@ void *coro_await(Coro *target) {
             // Check if this is a timeout event or a regular event
             // For coroutines with timeout, we need to determine which fd triggered
             if (coro->timeout_fd >= 0) {
-                // Use poll to check which fd is ready without consuming data
-                struct pollfd pfd = { .fd = coro->timeout_fd, .events = POLLIN };
-                int poll_ret = poll(&pfd, 1, 0);
+                // Check both fds to determine which one(s) are ready
+                struct pollfd pfds[2] = {
+                    { .fd = coro->timeout_fd, .events = POLLIN },
+                    { .fd = coro->waiting_fd, .events = coro->waiting_events }
+                };
+                int poll_ret = poll(pfds, 2, 0);
                 
-                if (poll_ret > 0 && (pfd.revents & POLLIN)) {
+                // Prioritize main fd over timeout - if main fd is ready, treat it as success
+                if (poll_ret > 0 && (pfds[1].revents & coro->waiting_events)) {
+                    // Main fd is ready
+                    coro->timed_out = 0;
+                } else if (poll_ret > 0 && (pfds[0].revents & POLLIN)) {
                     // Timeout fd is ready - timeout occurred
                     coro->timed_out = 1;
                     // Consume the timer event
                     uint64_t timer_val;
-                    read(coro->timeout_fd, &timer_val, sizeof(uint64_t));
+                    ssize_t s = read(coro->timeout_fd, &timer_val, sizeof(uint64_t));
+                    if (s < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                        perror("read timeout_fd");
+                    }
                 } else {
-                    // Main fd is ready
+                    // Neither ready (shouldn't happen, but default to main fd ready)
                     coro->timed_out = 0;
                 }
                 
