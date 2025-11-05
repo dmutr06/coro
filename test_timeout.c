@@ -106,6 +106,54 @@ void *test_delayed_fd_ready(void *arg) {
     return NULL;
 }
 
+void *test_zero_timeout(void *arg) {
+    (void)arg;
+    
+    // Create a pipe with data already available
+    int pipefd[2];
+    if (pipe(pipefd) < 0) {
+        printf("✗ Failed to create pipe\n");
+        return NULL;
+    }
+    
+    fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
+    write(pipefd[1], "test", 4);
+    
+    printf("Testing zero timeout with ready fd...\n");
+    int result = coro_sleep_fd_timeout(pipefd[0], EPOLLIN, 0);
+    
+    if (result == 1) {
+        printf("✓ Zero timeout correctly detected ready fd\n");
+    } else {
+        printf("✗ Zero timeout failed to detect ready fd\n");
+    }
+    
+    close(pipefd[0]);
+    close(pipefd[1]);
+    
+    // Test with non-ready fd
+    if (pipe(pipefd) < 0) {
+        printf("✗ Failed to create pipe\n");
+        return NULL;
+    }
+    
+    fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
+    
+    printf("Testing zero timeout with non-ready fd...\n");
+    result = coro_sleep_fd_timeout(pipefd[0], EPOLLIN, 0);
+    
+    if (result == 0) {
+        printf("✓ Zero timeout correctly detected non-ready fd\n");
+    } else {
+        printf("✗ Zero timeout incorrectly reported ready fd\n");
+    }
+    
+    close(pipefd[0]);
+    close(pipefd[1]);
+    
+    return NULL;
+}
+
 void *main_coro(void *arg) {
     (void)arg;
     
@@ -121,6 +169,10 @@ void *main_coro(void *arg) {
     
     // Test 3: FD becomes ready before timeout
     coro_await(coro_spawn(test_delayed_fd_ready, NULL));
+    printf("\n");
+    
+    // Test 4: Zero timeout
+    coro_await(coro_spawn(test_zero_timeout, NULL));
     printf("\n");
     
     printf("=== All tests completed ===\n");

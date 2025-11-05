@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
+#include <poll.h>
 #include "dyn_arr.h"
 
 thread_local static ucontext_t main_ctx;
@@ -136,13 +137,23 @@ void coro_sleep_ms(int ms) {
 }
 
 int coro_sleep_fd_timeout(int fd, int events, int timeout_ms) {
-    if (fd < 0 || timeout_ms <= 0) {
-        if (fd >= 0) {
-            coro_sleep_fd(fd, events);
-            return 1;
-        }
+    // Invalid parameters
+    if (fd < 0) {
         coro_yield();
         return 0;
+    }
+    
+    // Zero timeout means don't wait at all - just check if fd is ready
+    if (timeout_ms == 0) {
+        struct pollfd pfd = { .fd = fd, .events = events };
+        int ret = poll(&pfd, 1, 0);
+        return (ret > 0 && (pfd.revents & events)) ? 1 : 0;
+    }
+    
+    // Negative timeout means wait indefinitely (no timeout)
+    if (timeout_ms < 0) {
+        coro_sleep_fd(fd, events);
+        return 1;
     }
 
     if (!cur_coro) return 0;
@@ -266,12 +277,16 @@ void *coro_await(Coro *target) {
             // Check if this is a timeout event or a regular event
             // For coroutines with timeout, we need to determine which fd triggered
             if (coro->timeout_fd >= 0) {
-                // Check if the timeout fd is readable (timeout occurred)
-                uint64_t timer_val;
-                ssize_t s = read(coro->timeout_fd, &timer_val, sizeof(uint64_t));
-                if (s == sizeof(uint64_t)) {
-                    // Timeout occurred
+                // Use poll to check which fd is ready without consuming data
+                struct pollfd pfd = { .fd = coro->timeout_fd, .events = POLLIN };
+                int poll_ret = poll(&pfd, 1, 0);
+                
+                if (poll_ret > 0 && (pfd.revents & POLLIN)) {
+                    // Timeout fd is ready - timeout occurred
                     coro->timed_out = 1;
+                    // Consume the timer event
+                    uint64_t timer_val;
+                    read(coro->timeout_fd, &timer_val, sizeof(uint64_t));
                 } else {
                     // Main fd is ready
                     coro->timed_out = 0;
